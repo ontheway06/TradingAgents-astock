@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import types
+from pathlib import Path
 
 import pytest
 
@@ -103,7 +104,7 @@ def test_validation_blocks_sentinel_or_empty(fake_st, quick, deep, expected_labe
         {"quick_think_llm": quick, "deep_think_llm": deep}
     )
 
-    err = sidebar._validate_model_selection()
+    err = sidebar.validate_model_selection()
 
     assert err is not None
     assert expected_label in err
@@ -115,4 +116,53 @@ def test_validation_passes_for_real_models(fake_st):
         {"quick_think_llm": "deepseek-flash", "deep_think_llm": "deepseek-v4-pro"}
     )
 
-    assert sidebar._validate_model_selection() is None
+    assert sidebar.validate_model_selection() is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "quick,deep,expected_label",
+    [
+        ("", "deepseek-v4-pro", "快速思考模型"),
+        ("deepseek-flash", "", "深度思考模型"),
+        ("custom", "", "快速思考模型"),
+    ],
+)
+def test_validation_accepts_an_explicit_config(quick, deep, expected_label):
+    """消费点校验的是 `_build_config()` 的产物，不读 session_state。"""
+    config = {"quick_think_llm": quick, "deep_think_llm": deep}
+
+    err = sidebar.validate_model_selection(config)
+
+    assert err is not None
+    assert expected_label in err
+
+
+@pytest.mark.unit
+def test_validation_of_explicit_config_passes():
+    config = {"quick_think_llm": "deepseek-flash", "deep_think_llm": "deepseek-v4-pro"}
+
+    assert sidebar.validate_model_selection(config) is None
+
+
+@pytest.mark.unit
+def test_app_guards_at_the_consumption_point():
+    """结构性回归：模型校验必须挂在 `start_analysis` 的**消费点**。
+
+    `start_analysis` 有 5 个生产者（侧栏开始分析 / 未完成任务续跑 / 历史记录 /
+    报告页重新分析 / 错误页继续未完成任务）。只在侧栏按钮里守一个是不够的——实测
+    漏过：深模型选「Custom model ID」且留空、走续跑路径，请求带着空模型打了出去，
+    收到 `The supported API model names are ..., but you passed .`。
+
+    这里断言 web/app.py 在取出 start_analysis 之后、起线程之前调用了校验，而且校验
+    的是将要发出去的那份 config。
+    """
+    app_src = (
+        Path(sidebar.__file__).resolve().parent.parent / "app.py"
+    ).read_text(encoding="utf-8")
+
+    pop_at = app_src.index('st.session_state.pop("start_analysis"')
+    guard_at = app_src.index("validate_model_selection(config)")
+    run_at = app_src.index("run_analysis_in_thread(")
+
+    assert pop_at < guard_at < run_at

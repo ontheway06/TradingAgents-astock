@@ -56,18 +56,28 @@ def _resolve_model_value(value: str, text_key: str, label: str) -> str:
     ).strip()
 
 
-def _validate_model_selection() -> str | None:
-    """开始分析前拦住「模型 ID 没填」，别让它变成服务端的一句 400。
+def validate_model_selection(config: dict | None = None) -> str | None:
+    """拦住「模型 ID 没填」，别让它变成服务端的一句 400。
 
     模型配置在折叠面板里，选成「Custom model ID」却没填输入框时用户看不到任何提示，
-    请求会带着 'custom'（或空串）打出去，报回来的是「你传了 custom」这种与界面
-    对不上号的错误。
+    请求会带着 'custom' 或空串打出去，报回来的是「你传了 custom」「你传了 .」这种与
+    界面完全对不上号的错误。
+
+    **必须同时挂在唯一的消费点**（web/app.py 拿到 start_analysis 之后、真正起线程之前）：
+    `start_analysis` 有 5 个生产者——侧栏「开始分析」、侧栏「未完成任务」续跑、历史记录、
+    报告页「重新分析」、错误页「继续未完成任务」——只在按钮里守一个，其余四条路径照样
+    把空模型发出去（实测踩过：深模型选「Custom model ID」且留空，走续跑路径，
+    收到 `but you passed .`）。
+
+    `config` 传入**真正要发出去的配置**时校验的就是最终值；不传则退回读 session_state，
+    供侧栏按钮做即时反馈。
     """
+    source = config if config is not None else st.session_state
     for label, key in (
         ("快速思考模型", "quick_think_llm"),
         ("深度思考模型", "deep_think_llm"),
     ):
-        model = str(st.session_state.get(key) or "").strip()
+        model = str(source.get(key) or "").strip()
         if not model or model == _CUSTOM_MODEL_SENTINEL:
             return (
                 f"{label}的模型 ID 没填。请在「⚙️ 模型配置」里选一个模型，"
@@ -418,7 +428,7 @@ def render_sidebar() -> None:
         type="primary",
     ):
         _save_llm_config()  # persist model choice before running
-        model_err = _validate_model_selection()
+        model_err = validate_model_selection()
         resolved_code, err = _resolve_user_input(ticker)
         if model_err:
             st.error(f"❌ {model_err}")
